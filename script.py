@@ -46,7 +46,7 @@ def handle_new_event():
     hands = win32evtlog.OpenEventLog(SERVER, SOURCE_TYPE) # Open the log file to view the latest event
     events = win32evtlog.ReadEventLog(hands, FLAGS, READ_EVENT_LOG_OFFSET) # Read the events from the log file
 
-    for event in events:        
+    for event in events:
         if(event.EventID != READ_CREDENTIALS_EVENT_ID):
             continue
 
@@ -54,7 +54,7 @@ def handle_new_event():
         logonType = event.StringInserts[8]
         account_domain = event.StringInserts[18]
         
-        if(HOSTNAME in account_name or '-' in account_domain):
+        if(HOSTNAME in account_name or '-' == account_domain):
             continue
         
         logger.info(f'{account_name} logged on to {account_domain}. Logon Type: {logonType}. Checking logon in remote computer...')
@@ -157,8 +157,12 @@ def check_logon(account_domain):
     """
 
     logon_time = datetime.datetime.now()
-    hands = win32evtlog.OpenEventLog(account_domain, SOURCE_TYPE) # Open the log file to view the latest event
 
+    try:
+        hands = win32evtlog.OpenEventLog(account_domain, SOURCE_TYPE) # Open the log file to view the latest event
+    except:
+        return
+        
     users_to_disable = []
     while True:
         events = win32evtlog.ReadEventLog(hands, FLAGS, 0) # Read the events from the log file
@@ -176,7 +180,7 @@ def check_logon(account_domain):
             event.TimeGenerated.microsecond)
 
             if(abs(logon_time - event_time).seconds > PRIOR_EVENTS_SEARCH_SECONDS):
-                return None
+                return
 
         
 
