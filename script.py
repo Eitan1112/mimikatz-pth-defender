@@ -10,6 +10,7 @@ from pyad import aduser
 import subprocess
 import re
 import threading
+import pythoncom
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', handlers=[logging.FileHandler('script.log'), logging.StreamHandler()])
@@ -68,7 +69,13 @@ def handle_new_event():
 
 def handle_remote_actions(account_domain, account_name):
     """
-    
+    Handles all the actions on remote computer: gets events, and logoff and disable users.
+
+    Parameters:
+    account_domain (string): IP address of the remote machine
+    account_name (string): Username of the attacking user
+
+    Return Value (NoneType): None
     """
     
     objects_to_disable = check_logon(account_domain)
@@ -92,6 +99,7 @@ def disable_ad_objects(objects):
     Return Value (NoneType): None
     """
 
+    pythoncom.CoInitialize()
     for object_name in objects:
         try:
             selected_object = aduser.ADUser.from_cn(object_name)
