@@ -5,6 +5,7 @@ import win32api
 import win32con
 import datetime
 import logging
+import socket
 from pyad import aduser
 import subprocess
 import re
@@ -14,13 +15,13 @@ import threading
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', handlers=[logging.FileHandler('script.log'), logging.StreamHandler()])
 logger = logging.getLogger()
 
-HOSTNAME = 'DC'
+HOSTNAME = socket.gethostname() + '$'
 SERVER = 'localhost'
 
 SOURCE_TYPE = "Security"
 FLAGS = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
 
-EVT_WAIT_TIME = 500
+EVT_WAIT_TIME = 1
 PRIOR_EVENTS_SEARCH_SECONDS = 60
 
 EMPTY_EVENT_ATTRIBUTES = None
@@ -30,47 +31,55 @@ EMPTY_EVENT_NAME = 'evt0'
 READ_EVENT_LOG_OFFSET = 0
 
 LOGON_EVENT_ID = 4624
-READ_CREDENTIALS_EVENT_ID = 4624
-PTH_LOGON_TYPE = 9
+PTH_LOGON_TYPE = '9'
+EMPTY_EVENT_ATTRIBUTE_SIGN = '-'
 
 
 def handle_new_event():
     """
-    Called when a new security event is registered in the Domain Controller (localhost).
+    Called when a Aanew security event is registered in the Domain Controller (localhost).
     Goes over the latest events, and check for a valid logon event. If found, calls 'check_logon'
     to check the events on the remote server.
 
     Return Value (NoneType): None
     """
     
-    hands = win32evtlog.OpenEventLog(SERVER, SOURCE_TYPE) # Open the log file to view the latest event
-    events = win32evtlog.ReadEventLog(hands, FLAGS, READ_EVENT_LOG_OFFSET) # Read the events from the log file
+    log_handle = win32evtlog.OpenEventLog(SERVER, SOURCE_TYPE) # Open the log file to view the latest event
+    events = win32evtlog.ReadEventLog(log_handle, FLAGS, READ_EVENT_LOG_OFFSET) # Read the events from the log file
+    time_index = events[0].TimeGenerated # Time of latest event
 
     for event in events:
-        if(event.EventID != READ_CREDENTIALS_EVENT_ID):
-            continue
+        if(event.TimeGenerated != time_index): # Only check new events - 
+            return
 
+        if(event.EventID != LOGON_EVENT_ID): 
+            continue
+        
         account_name = event.StringInserts[5]
         logonType = event.StringInserts[8]
         account_domain = event.StringInserts[18]
         
-        if(HOSTNAME in account_name or '-' == account_domain):
+        if(account_name == HOSTNAME or account_domain == EMPTY_EVENT_ATTRIBUTE_SIGN):
             continue
         
         logger.info(f'{account_name} logged on to {account_domain}. Logon Type: {logonType}. Checking logon in remote computer...')
-        objects_to_disable = check_logon(account_domain)
+        threading.Thread(target=handle_remote_actions, args=(account_domain, account_name)).start()
 
-        if(not objects_to_disable):
-            logger.info(f'{account_name} to {account_domain} - Legitimate logon.')
-            continue
 
-        (attacking_user, attacked_user) = objects_to_disable
-        session_id = get_session_id(attacking_user, account_domain)
-        if(session_id):
-            logoff_user(session_id, account_domain)
-        disable_ad_objects(objects_to_disable)
-
-    win32evtlog.CloseEventLog(hands) # Close the log file
+def handle_remote_actions(account_domain, account_name):
+    """
+    
+    """
+    
+    objects_to_disable = check_logon(account_domain)
+    if(not objects_to_disable):
+        logger.info(f'{account_name} to {account_domain} - Legitimate logon.')
+        return
+    (attacking_user, attacked_user) = objects_to_disable
+    session_id = get_session_id(attacking_user, account_domain)
+    if(session_id):
+        logoff_user(session_id, account_domain)
+    disable_ad_objects(objects_to_disable)
 
 
 def disable_ad_objects(objects):
@@ -160,16 +169,18 @@ def check_logon(account_domain):
 
     try:
         hands = win32evtlog.OpenEventLog(account_domain, SOURCE_TYPE) # Open the log file to view the latest event
-    except:
+    except Excception as e:
+        logger.info(f'Unable to contact {account_domain}: {e}')
         return
-        
-    users_to_disable = []
+    
     while True:
         events = win32evtlog.ReadEventLog(hands, FLAGS, 0) # Read the events from the log file
         for event in events:
-            if(event.EventID == 4624 and event.StringInserts[8] == '9'):
+            if(event.EventID == LOGON_EVENT_ID and event.StringInserts[8] == PTH_LOGON_TYPE):
                 logger.info(f'Pass the hash found! Host: {account_domain}. At: {event.TimeGenerated}. Attacking user: {event.StringInserts[5]}. Attacked user: {event.StringInserts[22]}')
                 return (event.StringInserts[5], event.StringInserts[22])
+            elif(event.EventID == LOGON_EVENT_ID):
+                print(event.EventID, event.TimeGenerated, event.StringInserts[8])
 
             event_time = datetime.datetime(event.TimeGenerated.year, 
             event.TimeGenerated.month, 
@@ -193,20 +204,20 @@ def main():
     Return Value (NoneType): None
     """
 
-    h_log = win32evtlog.OpenEventLog(SERVER, SOURCE_TYPE) # Opens the source_type log from the server
-    h_evt = win32event.CreateEvent(EMPTY_EVENT_ATTRIBUTES, EMPTY_EVENT_MANUAL_STATE, EMPTY_EVENT_INITIAL_STATE, EMPTY_EVENT_NAME) # Creates an empty event
-    win32evtlog.NotifyChangeEventLog(h_log, h_evt) # Notify changes in h_evt foreach change in h_log
+    log_handle = win32evtlog.OpenEventLog(SERVER, SOURCE_TYPE) # Opens the source_type log from the server
+    evt_handle = win32event.CreateEvent(EMPTY_EVENT_ATTRIBUTES, EMPTY_EVENT_MANUAL_STATE, EMPTY_EVENT_INITIAL_STATE, EMPTY_EVENT_NAME) # Creates an empty event
+    win32evtlog.NotifyChangeEventLog(log_handle, evt_handle) # Notify changes in h_evt foreach change in h_log
     logger.info(f"Waiting for changes in the '{SOURCE_TYPE}' event log...")
     
     while True:
-        wait_result = win32event.WaitForSingleObject(h_evt, EVT_WAIT_TIME) # Waits for a new object in h_evt
+        wait_result = win32event.WaitForSingleObject(evt_handle, EVT_WAIT_TIME) # Waits for a new object in h_evt
         if wait_result == win32con.WAIT_OBJECT_0: # If there is a new object
-            threading.Thread(target=handle_new_event()).start()
+            handle_new_event()
                 
         elif wait_result == win32con.WAIT_ABANDONED: 
             logger.info("Abandoned")
-    win32api.CloseHandle(h_evt) # Close the event handles
-    win32evtlog.CloseEventLog(h_log) # Close the log file
+    win32api.CloseHandle(evt_handle) # Close the event handles
+    win32evtlog.CloseEventLog(log_handle) # Close the log file
 
 
 if(__name__ == '__main__'):
